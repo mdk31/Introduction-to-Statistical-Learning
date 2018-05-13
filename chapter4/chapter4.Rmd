@@ -1,0 +1,266 @@
+---
+title: 'Chapter 4: Classification'
+author: "Matt Kosko"
+date: "5/13/2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ISLR)
+library(class)
+library(tidyverse)
+library(MASS)
+library(gridExtra)
+library(GGally)
+set.seed(123)
+```
+
+10. This question should be answered using the `Weekly` data set, which is part of the `ISLR` package. This data is similar in nature to the `Smarket` data from this chapter’s lab, except that it contains 1,089 weekly returns for 21 years, from the beginning of 1990 to the end of 2010.
+
+(a) Produce some numerical and graphical summaries of the Weekly data. Do there appear to be any patterns?
+```{r}
+summary(Weekly)
+```
+
+```{r message = FALSE, warning = FALSE}
+Weekly %>% dplyr::select(-Year) %>% ggpairs()
+```
+
+(b) Use the full data set to perform a logistic regression with Direction as the response and the five lag variables plus Volume as predictors. Use the summary function to print the results. Do any of the predictors appear to be statistically significant? If so, which ones?
+
+```{r}
+glm.out <- glm(Direction ~ Lag1+Lag2+Lag3+Lag4+Lag5+Volume, data = Weekly, family = 'binomial')
+sum1 <- summary(glm.out)
+sum1
+```
+```{r}
+ps <- coef(sum1)[,4]
+print(names(which(ps < 0.05)))
+```
+
+(c) Compute the confusion matrix and overall fraction of correct predictions. Explain what the confusion matrix is telling you about the types of mistakes made by logistic regression.
+
+```{r}
+probs <- predict(glm.out,type='response')
+predicted <- rep("Up",length(probs))
+predicted[probs < 0.5] <- 'Down'
+confusion <- table(Weekly$Direction,predicted)
+confusion
+```
+```{r}
+cat("The fraction of correct predictions is ",(confusion[1,1]+confusion[2,2])/length(Weekly$Direction),sep='')
+```
+
+The model predicts "Up" most of the time, which leads to many false positives.
+
+(d) Now fit the logistic regression model using a training data period from 1990 to 2008, with Lag2 as the only predictor. Compute the confusion matrix and the overall fraction of correct predictions for the held out data (that is, the data from 2009 and 2010).
+
+```{r}
+train <- which((Weekly$Year <= 2008 & Weekly$Year >= 1990))
+confusion_matrix <- function(df,dep,preds,training,FUN,...){
+  formula <- paste(paste(dep,'~',sep=' '), paste(preds,collapse=' + '),sep=' ')
+  model.out <- FUN(formula=as.formula(formula),subset=training,data=df,...)
+    if (sum(class(model.out) %in% c('lda','qda')) >=1 ) {
+    predicted <- predict(model.out,df[-training, ],type='class')
+    model.class=predicted$class
+    confusion <- table(model.class, df[-training, dep])
+    correct <- (confusion[[1,1]] + confusion[[2,2]]) / length(model.class)
+    return(list(confusion,correct))
+  } else {
+    predicted <- predict(model.out,df[-training, ], type='response')
+    classes <- rep("Up",dim(df[-training, ])[1])
+    classes[predicted < 0.5] <- 'Down'
+    confusion <- table(classes,df[-training, dep])
+    correct <- (confusion[[1,1]] + confusion[[2,2]]) / length(classes)
+    return(list(confusion,correct))
+  }
+
+}
+answer <- confusion_matrix(df=Weekly,dep='Direction',preds='Lag2',training=train,FUN=glm,family='binomial')
+answer[[1]]
+```
+
+
+```{r}
+cat("The fraction of correct predictions is ",answer[[2]],sep='')
+```
+
+(e) Repeat (d) using LDA.
+
+```{r}
+answer_lda <- confusion_matrix(df=Weekly,dep='Direction',preds='Lag2',training=train,FUN=lda)
+answer_lda[[1]]
+```
+
+```{r}
+cat("The fraction of correct predictions is ",answer_lda[[2]],sep='')
+```
+
+(f) Repeat (d) using QDA.
+
+```{r}
+answer_qda <- confusion_matrix(df=Weekly,dep='Direction',preds='Lag2',training=train,FUN=qda)
+answer_qda[[1]]
+```
+
+```{r}
+cat("The fraction of correct predictions is ",answer_qda[[2]],sep='')
+```
+
+(g) Repeat (d) using kNN with $k = 1$.
+
+```{r}
+get_k <- function(k,df,dep_index,training){
+  std_x <- scale(df[, -dep_index])
+  knn.pred <- knn(std_x[training, ],std_x[-training, ],df[training, dep_index], k=k)
+  confusion <- table(knn.pred, df[-training, dep_index])
+  correct <- (confusion[[1,1]] + confusion[[2,2]]) / length(knn.pred)
+  return(list(confusion,correct))
+}
+answer_k <- get_k(k=1,df=Weekly,training=train,dep_index=9)
+answer_k[[1]]
+```
+
+```{r}
+cat("The fraction of correct predictions is ",answer_k[[2]],sep='')
+```
+(h) Which of these methods appears to provide the best results on
+this data?
+
+kNN appears to do the best.
+
+11. In this problem, you will develop a model to predict whether a given car gets high or low gas mileage based on the Auto data set.
+
+(a) Create a binary variable, `mpg01`, that contains a 1 if mpg contains a value above its median, and a 0 if mpg contains a value below its median. You can compute the median using the `median()` function. Note you may find it helpful to use the `data.frame()` function to create a single data set containing both `mpg01` and the other Auto variables.
+
+```{r}
+Auto <- Auto %>% mutate(mpg01 = ifelse(mpg > median(mpg),1,0))
+```
+
+(b) Explore the data graphically in order to investigate the association between mpg01 and the other features. Which of the other features seem most likely to be useful in predicting mpg01? Scatterplots and boxplots may be useful tools to answer this question. Describe your findings.
+
+```{r message=F, warning=F}
+make_mpg01_plots <- function(df,pred,y='mpg01'){
+  ggplot(df,aes_string(x=pred,y=y)) + geom_point() + geom_smooth()
+}
+df <-Auto %>% select_if(is.numeric)
+marrangeGrob(map(names(df),make_mpg01_plots,df=Auto),ncol=3,nrow=3)
+```
+
+Making some box plots
+```{r, warning=F, message=F}
+make_mpg01_boxplots <- function(df,pred,x='mpg01'){
+  ggplot(df,aes_string(x=x,y=pred)) + geom_boxplot()
+}
+df$mpg01 <- factor(df$mpg01)
+pl <- map(names(df),make_mpg01_boxplots,df=df)
+marrangeGrob(pl,ncol=4,nrow=3)
+```
+
+(c) Split the data into a training set and a test set.
+
+```{r}
+train <- sample(nrow(Auto),dim(Auto)[1]/2)
+```
+
+(d) Perform LDA on the training data in order to predict mpg01 using the variables that seemed most associated with mpg01 in (b). What is the test error of the model obtained?
+
+```{r}
+predictors <- names(df %>% dplyr::select(displacement,weight,horsepower))
+train <- sample(nrow(df),dim(df)[1]/2)
+paste('The test error is',
+      1-round(confusion_matrix(dep='mpg01',df=df,preds=predictors,training=train,FUN=lda)[[2]],3),sep=' ')
+```
+
+(e) Perform QDA on the training data in order to predict mpg01 using the variables that seemed most associated with mpg01 in (b). What is the test error of the model obtained?
+
+```{r}
+paste('The test error is',1-round(confusion_matrix(dep='mpg01',df,preds=predictors,training=train,FUN=qda)[[2]],3),sep=' ')
+```
+
+(f) Perform logistic regression on the training data in order to predict `mpg01` using the variables that seemed most associated with `mpg01` in (b). What is the test error of the model obtained?
+
+```{r}
+paste('The test error is',
+      1-round(confusion_matrix(dep='mpg01',df,preds=predictors,training=train,FUN=glm,family='binomial')[[2]],3),sep=' ')
+```
+
+(g) Perform KNN on the training data, with several values of K, in order to predict mpg01. Use only the variables that seemed most associated with mpg01 in (b). What test errors do you obtain? Which value of K seems to perform the best on this data set?
+
+```{r}
+get_best_k <- function(k,df,dep_index,training){
+  std_x <- scale(df[, -dep_index])
+  knn.pred <- knn(std_x[training,],std_x[-training,],df[training,dep_index],k=k)
+  return(mean(df[-training, dep_index] == knn.pred))
+}
+all_k <- map_dbl(1:20,get_best_k,df=df,dep_index=9,training=train)
+best_k <- which(all_k == max(all_k))[1]
+paste("The k that provides the lowest error on the test data is",best_k,sep=' ')
+paste('The test error is',
+      1-round(get_best_k(k=best_k,df=df,dep_index=9,training=train),3),sep=' ')
+```
+
+12. This problem involves writing functions.
+(a) Write a function, `Power()`, that prints out the result of raising 2 to the 3rd power. In other words, your function should compute $2^3$ and print out the results.
+Hint: Recall that $x^a$ raises x to the power a. Use the `print()` function to output the result.
+
+```{r}
+Power <- function(){
+  return(2^3)
+}
+Power()
+```
+
+(b) Create a new function, Power2(), that allows you to pass any two numbers, x and a, and prints out the value of x^a. You can do this by beginning your function with the line
+`Power2=function(x,a){`
+You should be able to call your function by entering, for instance,
+`Power2 (3 ,8)`
+on the command line. This should output the value of 38, namely, 6561.
+```{r}
+Power2 <- function(x,a){
+  return(x^a)
+}
+Power2(3,8)
+```
+
+(c) Using the Power2() function that you just wrote, compute $10^3$, $8^17$, and $13^13$.
+```{r}
+l1 <- c(10,8,13)
+l2 <- c(3,17,13)
+map2_dbl(l1,l2,Power2)
+```
+
+(d) Now create a new function, `Power3()`, that actually returns the result $x^a$ as an R object, rather than simply printing it to the screen. That is, if you store the value $x^a$ in an object called result within your function, then you can simply `return()` this result, using the following line:
+`return()`
+  
+ `return(result)`
+The line above should be the last line in your function, before the `}` symbol.
+
+```{r}
+Power3 <- function(x,a){
+  return(x^a)
+}
+```
+
+(e) Now using the `Power3()` function, create a plot of $f(x) = x^2$. The x-axis should display a range of integers from 1 to 10, and the y-axis should display $x^2$. Label the axes appropriately, and use an appropriate title for the figure. Consider displaying either the x-axis, the y-axis, or both on the log-scale. You can do this by using `log=‘‘x’’`, `log=‘‘y’’`, or `log=‘‘xy’’` as arguments to the `plot()` function.
+
+```{r}
+dfp <- data.frame(x=1:10,y=map_dbl(1:10,Power3,a=2))
+ggplot(dfp,aes(x=x,y=y)) + geom_line() + ylab('x^2') + scale_y_log10() +
+  scale_x_log10()
+```
+
+(f) Create a function, `PlotPower()`, that allows you to create a plot of x against $x^a$ for a fixed a and for a range of values of x. For instance, if you call
+`PlotPower (1:10 ,3)`
+then a plot should be created with an x-axis taking on values $1,2,...,10$, and a y-axis taking on values $13,23,...,103$.
+```{r}
+PlotPower <- function(x,a){
+  df <- data.frame(x=x,y=x^a)
+  labeled <- paste('x','^',deparse(substitute(a)),sep='')
+  ggplot(df,aes(x=x,y=x^a)) + geom_line() + ylab(labeled)
+}
+PlotPower(1:10,3)
+```
+
+
