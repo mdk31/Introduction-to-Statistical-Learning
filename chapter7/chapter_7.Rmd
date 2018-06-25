@@ -1,0 +1,323 @@
+---
+title: 'Chapter 7: Moving Beyond Linearity'
+author: "Matt Kosko"
+date: "6/17/2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ISLR)
+library(leaps)
+library(boot)
+library(plyr)
+library(splines)
+if (!require(mgcv)){
+  install.packages('mgcv')
+  library(mgcv)
+}
+if (!require(visreg)){
+  install.packages('visreg')
+  library(visreg)
+}
+library(tidyverse)
+library(gridExtra)
+library(MASS)
+```
+
+
+6. In this exercise, you will further analyze the `Wage` data set considered throughout this chapter.
+
+(a) Perform polynomial regression to predict wage using age. Use cross-validation to select the optimal degree $d$ for the polynomial. What degree was chosen, and how does this compare to the results of hypothesis testing using ANOVA? Make a plot of the resulting polynomial fit to the data.
+
+```{r}
+set.seed(321)
+cv.poly <- function(i, data, k){
+  form <- paste0('wage ~ poly(age, ', i, ')')
+  glm.out <- glm(as.formula(form), data = data)
+  cv.glm(data, glm.out, K = k)$delta[1]
+}
+cv.error <- lapply(1:20, cv.poly, data = Wage, k = 10)
+models <- function(i, data){
+  form <- paste0('wage ~ poly(age, ', i, ')')
+  lm.out <- lm(as.formula(form), data = data)
+  lm.out
+}
+mods <- lapply(1:20, models, data = Wage)
+print(which.min(cv.error))
+do.call(anova, mods)
+```
+
+We see that the 9th order polynomial model fits better than an 8th order, but it does not seem that orders higher than 4 provide better fits than lower order models.
+
+(b) Fit a step function to predict wage using age, and perform cross-validation to choose the optimal number of cuts. Make a plot of the fit obtained.
+
+```{r}
+set.seed(123)
+cv.cuts <- function(i, data, k){
+  data$tmp <- cut(data$age, i)
+  glm.out <- glm(wage ~ tmp, data = data)
+  cv.glm(data, glm.out, K = k)$delta[1]
+}
+cuts <- lapply(2:20, cv.cuts, data = Wage, k = 10)
+which.min(cuts)
+cuts.min <- lm(wage ~ cut(age, which.min(cuts)), data = Wage)
+preds <- predict(cuts.min, se = TRUE)
+df <- data.frame(wage = Wage$wage, age = Wage$age , fitted = preds$fit, lower = preds$fit - 2*preds$se.fit, upper = preds$fit + 2*preds$se.fit)
+ggplot(df, aes(x = age, y = wage)) + geom_point() + geom_line(aes(y = fitted), color = 'red') + geom_line(aes(y = lower), color = 'red', linetype = 2) +
+  geom_line(aes(y = upper), color = 'red', linetype = 2)
+```
+
+7. The Wage data set contains a number of other features not explored in this chapter, such as marital status (`maritl`), job class (`jobclass`), and others. Explore the relationships between some of these other predictors and wage, and use non-linear fitting techniques in order to fit flexible models to the data. Create plots of the results obtained, and write a summary of your findings.
+
+First, we make a plot of the data.
+
+```{r echo = FALSE, results = 'hide', fig.keep='all'}
+make_plots <- function(data, xvar, yvar){
+  if (is.factor(data[, xvar])){
+    ggplot(data, aes_(x = as.name(xvar), y = as.name(yvar))) + geom_boxplot()
+  } else {
+    ggplot(data, aes_(x = as.name(xvar), y = as.name(yvar))) + geom_point() + geom_smooth(method = 'lm')
+  }
+}
+p <- map(names(Wage), make_plots, yvar = 'wage', data = Wage)
+p
+```
+
+```{r}
+gam.out1 <- gam(wage ~ s(age, bs = 'cr') + race + education + s(year, k = 4, bs = 'cr'), data = Wage)
+summary(gam.out1)
+```
+
+```{r}
+plots <- visreg(gam.out1, plot = FALSE)
+df <- ldply(plots, function(part)
+  data.frame(variable = part$meta$x,
+             x=part$fit[[part$meta$x]], 
+             smooth=part$fit$visregFit, 
+             lower=part$fit$visregLwr, 
+             upper=part$fit$visregUpr))
+df %>% dplyr::filter(variable == 'age') %>% ggplot(aes(x, smooth)) + geom_line() +
+  geom_line(aes(y=lower), linetype="dashed") + 
+  geom_line(aes(y=upper), linetype="dashed") + 
+  facet_grid(. ~ variable, scales = "free_x")
+```
+
+There is a non-linear relationship between age and wage. 
+
+9. This question uses the variables `dis` (the weighted mean of distances to five Boston employment centers) and `nox` (nitrogen oxides concentration in parts per 10 million) from the Boston data. We will treat `dis` as the predictor and `nox` as the response.
+
+(a) Use the `poly()` function to fit a cubic polynomial regression to predict `nox` using `dis`. Report the regression output, and plot the resulting data and polynomial fits.
+
+```{r}
+lm.out <- lm(nox ~ poly(dis, 3, raw = TRUE), data = Boston)
+summary(lm.out)
+```
+
+```{r}
+ggplot(Boston, aes(y = nox, x = dis)) + geom_point() + geom_smooth(method = 'lm', formula = 'y ~ poly(x, 3, raw = TRUE)')
+```
+
+(b) Plot the polynomial fits for a range of different polynomial degrees (say, from 1 to 10), and report the associated residual sum of squares.
+
+```{r echo = FALSE, results = 'hide', fig.keep='all'}
+get_rss <- function(i, data, plots = TRUE){
+  if (plots) {
+    ggplot(data, aes(x = dis, y = nox)) + geom_point() + geom_smooth(method = 'lm', formula = paste0('y ~ ', 'poly(x, ', i, ', raw = TRUE)'))
+  } else {
+    formula1 <- paste0('nox ~ ', 'poly(dis, ', i, ', raw = TRUE)')
+    lm.out <- lm(as.formula((formula1)), data = data)
+    sum(lm.out$residuals^2)
+  }
+}
+map(1:10, get_rss, data = Boston, plots = TRUE)
+```
+
+```{r}
+map(1:10, get_rss, data = Boston, plots = FALSE)
+```
+
+(c) Perform cross-validation or another approach to select the optimal degree for the polynomial, and explain your results.
+
+```{r}
+set.seed(321)
+cv.poly <- function(i, data, y, x, k){
+  form <- paste0(y,' ~ poly(', x, ', ', i, ', raw = TRUE)')
+  glm.out <- glm(as.formula(form), data = data)
+  cv.glm(data, glm.out, K = k)$delta[1]
+}
+degrees <- map(1:10, cv.poly, Boston, y = 'nox', x = 'dis', k = 10)
+which.min(degrees)
+```
+
+(d) Use the `bs()` function to fit a regression spline to predict `nox` using `dis`. Report the output for the fit using four degrees of freedom. How did you choose the knots? Plot the resulting fit.
+
+```{r}
+bs.out <- lm(nox ~ bs(dis, df = 4), data = Boston)
+summary(bs.out)
+```
+
+The knot is chosen at the median of the data. 
+
+```{r}
+attr(bs(Boston$dis, df = 4), 'knots')
+```
+
+```{r}
+p <- ggplot(Boston, aes(y = nox, x = dis))
+p + geom_point() + geom_smooth(method = 'lm', formula = y ~ bs(x, df = 4))
+```
+
+(e) Now fit a regression spline for a range of degrees of freedom, and plot the resulting fits and report the resulting RSS. Describe the results obtained.
+
+```{r echo = FALSE, results = 'hide', fig.keep='all'}
+spline_plots <- function(i, data, y, x, plots = TRUE){
+  if (plots){
+    ggplot(data, aes_(y = as.name(y), x = as.name(x))) + geom_point() + geom_smooth(method = 'lm', formula = paste0('y ~ bs(x, df = ', i, ')'))
+  } else {
+    formula1 <- paste0(y, ' ~ bs(', x, ', df = ', i, ')')
+    lm.out <- lm(as.formula(formula1), data = data)
+    sum(lm.out$residuals^2)
+  }
+}
+plotsbs <- map(4:20, spline_plots, data = Boston, y = 'nox', x = 'dis')
+plotsbs
+```
+
+```{r}
+map(4:20, spline_plots, data = Boston, y = 'nox', x = 'dis', plots = FALSE)
+```
+
+
+(f) Perform cross-validation or another approach in order to select the best degrees of freedom for a regression spline on this data. Describe your results.
+
+```{r warning = FALSE}
+set.seed(322)
+cv.bs <- function(i, data, y, x, k){
+  formula1 <- paste0(y, ' ~ bs(', x, ', df = ', i, ')')
+  glm.out <- glm(as.formula(formula1), data = data)
+  cv.glm(data, glm.out, K = k)$delta[1]
+}
+dof <- map(4:20, cv.bs, data = Boston, y = 'nox', x = 'dis', k = 10)
+which.min(dof)
+```
+
+10. This question relates to the College data set.
+
+(a) Split the data into a training set and a test set. Using out-of-state tuition as the response and the other variables as the predictors, perform forward stepwise selection on the training set in order to identify a satisfactory model that uses just a subset of the predictors.
+
+```{r}
+train <- sample(nrow(College)/2)
+College.train <- College[train, ]
+subset.out <- regsubsets(Outstate ~ ., data = College.train, method = 'forward' )
+which.min(summary(subset.out)$bic)
+included <- names(coef(subset.out, which.min(summary(subset.out)$bic)))
+included
+```
+
+(b) Fit a GAM on the training data, using out-of-state tuition as the response and the features selected in the previous step as the predictors. Plot the results, and explain your findings.
+
+```{r}
+gam.out <- gam(Outstate ~ Private + Room.Board + Personal + Terminal + perc.alumni  + Expend + Grad.Rate, data = College.train)
+summary(gam.out)
+```
+
+```{r}
+plots <- visreg(gam.out, plot = FALSE)
+df <- ldply(plots, function(part)
+  data.frame(variable = part$meta$x,
+             x=part$fit[[part$meta$x]], 
+             smooth=part$fit$visregFit, 
+             lower=part$fit$visregLwr, 
+             upper=part$fit$visregUpr))
+df %>% dplyr::filter(variable != 'Private') %>% mutate_at(vars(x:upper),funs(as.numeric)) %>% ggplot(aes(x, smooth)) + geom_line() +
+  geom_line(aes(y=lower), linetype="dashed") + 
+  geom_line(aes(y=upper), linetype="dashed") + 
+  facet_grid(. ~ variable, scales = "free_x")
+```
+
+(c) Evaluate the model obtained on the test set, and explain the results obtained.
+
+```{r}
+preds <- predict(gam.out, newdata = College[-train, ])
+mean((preds - College[-train, 'Outstate'])^2)
+```
+
+(d) For which variables, if any, is there evidence of a non-linear relationship with the response?
+
+There does not seem to be a nonlinear relationship among any of the variables.
+
+11. In Section 7.7, it was mentioned that GAMs are generally fit using a backfitting approach. The idea behind backfitting is actually quite simple. We will now explore backfitting in the context of multiple linear regression.
+
+Suppose that we would like to perform multiple linear regression, but we do not have software to do so. Instead, we only have software to perform simple linear regression. Therefore, we take the following iterative approach: we repeatedly hold all but one coefficient estimate fixed at its current value, and update only that coefficient estimate using a simple linear regression. The process is continued until convergence—that is, until the coefficient estimates stop changing.
+
+We now try this out on a toy example.
+
+(a) Generate a response Y and two predictors $X_1$ and $X_2$, with $n = 100$.
+
+```{r}
+set.seed(123)
+y <- rnorm(100)
+x1 <- rnorm(100)
+x2 <- rnorm(100)
+```
+
+(b) Initialize $\hat{beta}_1$ to take on a value of your choice. It does not matter what value you choose.
+
+```{r}
+beta1 <- 1
+```
+
+(c) Keeping $\hat{\beta}_1$ fixed, fit the model
+
+$$
+Y − \hat{\beta}_1 X_1 = \beta_0 + \beta_2 X_2 + \epsilon .
+$$
+You can do this as follows:
+
+```{r}
+a=y-beta1*x1
+beta2=lm(a ~ x2)$coef[2]
+```
+
+(d) Keeping $\hat{\beta}_2$ fixed, fit the model
+
+$$
+Y − \hat{\beta}_2 X_2 = \beta_0 + \beta_1 X_1 + \epsilon .
+$$
+
+You can do this as follows:
+```{r}
+a = y-beta2*x2
+beta1 = lm(a ~ x1)$coef[2]
+```
+
+(e) Write a for loop to repeat (c) and (d) 1,000 times. Report the estimates of $\hat{\beta}_0$, $\hat{\beta}_1$, and $\hat{\beta}_2$ at each iteration of the for loop. Create a plot in which each of these values is displayed, with $\hat{\beta}_0$, $\hat{\beta}_1$, and $\hat{\beta}_2$ each shown in a different color.
+
+```{r results = 'hide'}
+iterate <- function(){
+  a <- y-beta1*x1
+  beta2 <<- lm(a ~ x2)$coef[2]
+  a <- y-beta2*x2
+  beta1 <<- lm(a ~ x1)$coef[2]
+  return(c(lm(a ~ x1)$coef[1], beta1, beta2))
+}
+beta1 <- 1
+mat <- replicate(1000, iterate())
+df <- as.data.frame(t(mat))
+names(df) <- c('beta0', 'beta1', 'beta2')
+ggplot(df, aes(x = seq_along(beta0))) + geom_line(aes(y=beta0, color = 'beta0')) +
+  geom_line(aes(y=beta1, color = 'beta1')) +
+  geom_line(aes(y=beta2, color = 'beta2'))
+```
+
+(f) Compare your answer in (e) to the results of simply performing multiple linear regression to predict Y using X1 and X2. Use the `abline()` function to overlay those multiple linear regression coefficient estimates on the plot obtained in (e).
+
+```{r}
+lm.out <- lm(y ~ x1 + x2)
+coef(lm.out)
+```
+(g) On this data set, how many backfitting iterations were required in order to obtain a “good” approximation to the multiple regression coefficient estimates?
+
+It converges to the multiple linear regression coefficients in one pass.
+
