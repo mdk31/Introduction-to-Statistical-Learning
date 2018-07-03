@@ -1,0 +1,341 @@
+---
+title: 'Chapter 8: Tree-Based Methods'
+author: "Matt Kosko"
+date: "6/24/2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+if (!require(randomForest)){
+  install.packages('randomForest')
+  library(randomForest)
+}
+if (!require(gbm)){
+  install.packages('gbm')
+  library(gbm)
+}
+library(ISLR)
+library(tree)
+library(glmnet)
+library(class)
+library(tidyverse)
+library(MASS)
+```
+
+7. In the lab, we applied random forests to the Boston data using `mtry=6` and using `ntree=25` and `ntree=500`. Create a plot displaying the test error resulting from random forests on this data set for a more comprehensive range of values for `mtry` and `ntree`. You can model your plot after Figure 8.10. Describe the results obtained.
+
+```{r}
+set.seed(230)
+tree_num1 <- seq(5, 600, by = 5)
+tree_num <- do.call('c',lapply(tree_num1, rep, times = 5))
+mtry_num <- rep(c(2, 4, 6, 8, 10), length(tree_num1))
+train <- sample(nrow(Boston)/2)
+tree_range <- function(trees, num, data, predicted, predictors, training){
+  if (!missing(predictors)) {
+    form <- paste0(predicted, ' ~ ', paste(predictors, collapse = ' + '))
+  } else {
+    form <- paste0(predicted, ' ~ .')
+  }
+  tree.out <- randomForest(formula = as.formula(form), data = data, ntree = trees, mtry = num, subset = training)
+  preds <- predict(tree.out, newdata = data[-training, ])
+  error <- mean((preds - data[-training, predicted])^2)
+  c(error = error, ntree = trees, mtry = num)
+}
+test_errors <- map2(tree_num, mtry_num, tree_range, data = Boston, predicted = 'medv', training = train)
+df <- as.data.frame(do.call(rbind, test_errors))
+ggplot(df, aes(x = ntree, y = error)) + geom_point(aes(color = mtry)) + ylim(c(0,60))
+```
+
+8. In the lab, a classification tree was applied to the Carseats data set after converting Sales into a qualitative response variable. Now we will seek to predict Sales using regression trees and related approaches, treating the response as a quantitative variable.
+
+(a) Split the data set into a training set and a test set.
+
+```{r}
+set.seed(132)
+train <- sample(1:nrow(Carseats), nrow(Carseats)/2)
+Carseats.train <- Carseats[train, ]
+Carseats.test <- Carseats[-train, ]
+```
+
+(b) Fit a regression tree to the training set. Plot the tree, and interpret the results. What test MSE do you obtain?
+
+```{r}
+tree.out <- tree(Sales ~ ., data = Carseats.train)
+plot(tree.out)
+text(tree.out, pretty = 0)
+```
+
+
+```{r}
+preds <- predict(tree.out, new = Carseats.test)
+mean((preds - Carseats.test$Sales)^2)
+```
+
+(c) Use cross-validation in order to determine the optimal level of tree complexity. Does pruning the tree improve the test MSE?
+
+```{r}
+cv.out <- cv.tree(tree.out)
+df <- data.frame(dev = cv.out$dev, size = cv.out$size)
+ggplot(df, aes(x = size, y = dev)) + geom_line()
+```
+
+```{r}
+best <- cv.out$size[which.min(cv.out$dev)]
+```
+
+```{r}
+prune.out <- prune.tree(tree.out, best = best)
+yhat_prune <- predict(prune.out, new = Carseats.test)
+yhat <- predict(tree.out, new = Carseats.test)
+y <- Carseats.test$Sales
+mse <- function(preds, y){
+  mean((y - preds)^2)
+}
+paste0('Pruning the tree ', ifelse(mse(yhat_prune, y) < mse(yhat, y),'improves', 'does not improve'), ' test MSE')
+```
+
+(d) Use the bagging approach in order to analyze this data. What test MSE do you obtain? Use the `importance()` function to determine which variables are most important.
+
+```{r}
+bag.out <- randomForest(Sales ~., mtry = dim(Carseats.train)[2]-1, data = Carseats.train)
+yhat_bag <- predict(bag.out, new = Carseats.test)
+mse(yhat_bag, y)
+```
+
+```{r}
+importance(bag.out)
+```
+
+(e) Use random forests to analyze this data. What test MSE do you obtain? Use the `importance()` function to determine which variables are most important. Describe the effect of $m$, the number of variables considered at each split, on the error rate obtained.
+
+```{r}
+rf.out <- randomForest(Sales ~., data = Carseats.train)
+yhat_rf <- predict(rf.out, new = Carseats.test)
+mse(yhat_rf, y)
+m_plot <- function(m, data, newdata, y, predictors, ...){
+    if (!missing(predictors)) {
+    form <- paste0(y, ' ~ ', paste(predictors, collapse = ' + '))
+  } else {
+    form <- paste0(y, ' ~ .')
+  }
+  rf.out <- randomForest(formula = as.formula(form), data = data, mtry = m)
+  preds <- predict(rf.out, newdata = newdata)
+  error <- mean((preds - newdata[, y])^2)
+  c(error = error, m = m)
+}
+mat <- map(rep(1:10, 100), m_plot, data = Carseats.train, newdata = Carseats.test, y = 'Sales')
+df <- as.data.frame(do.call(rbind, mat))
+ggplot(df, aes(x = as.factor(m), y = error)) + geom_boxplot() + xlab('m') + ylab('Test error')
+```
+
+9. This problem involves the OJ data set which is part of the ISLR package.
+
+(a) Create a training set containing a random sample of 800 observations, and a test set containing the remaining observations.
+
+```{r}
+data(OJ)
+set.seed(432)
+train <- sample(1:nrow(OJ), 800)
+```
+
+(b) Fit a tree to the training data, with `Purchase` as the response and the other variables as predictors. Use the `summary()` function to produce summary statistics about the tree, and describe the results obtained. What is the training error rate? How many terminal nodes does the tree have?
+
+```{r}
+tree.out <- tree(Purchase ~., data = OJ, subset = train)
+summ <- summary(tree.out)
+summ
+```
+
+
+(d) Create a plot of the tree, and interpret the results.
+
+```{r}
+plot(tree.out)
+text(tree.out, pretty = 0)
+```
+
+(e) Predict the response on the test data, and produce a confusion matrix comparing the test labels to the predicted test labels. What is the test error rate?
+
+```{r}
+preds <- predict(tree.out, new = OJ[-train, ], type = 'class')
+truth <- OJ[-train, 'Purchase']
+tab <- table(preds, truth)
+tab
+paste0('The test error rate is ', round((1-(tab[1,1]+tab[2,2])/270), 3))
+```
+
+(f) Apply the `cv.tree()` function to the training set in order to determine the optimal tree size.
+
+```{r}
+set.seed(616)
+cv.out <- cv.tree(tree.out, FUN = prune.misclass)
+cv.out
+```
+
+(g) Produce a plot with tree size on the x-axis and cross-validated classification error rate on the y-axis.
+
+```{r}
+df <- data.frame(dev = cv.out$dev, size = cv.out$size)
+ggplot(df, aes(x = size, y = dev)) + geom_line()
+```
+
+(h) Which tree size corresponds to the lowest cross-validated classification error rate?
+
+```{r}
+cv.out$size[which.min(cv.out$dev)]
+```
+
+(i) Produce a pruned tree corresponding to the optimal tree size obtained using cross-validation. If cross-validation does not lead to selection of a pruned tree, then create a pruned tree with five terminal nodes.
+
+```{r}
+prune.out <- prune.tree(tree.out, best = cv.out$size[which.min(cv.out$dev)])
+sump <- summary(prune.out)
+```
+
+(j) Compare the training error rates between the pruned and un-pruned trees. Which is higher?
+
+```{r}
+paste0('The training error for the pruned tree is ', ifelse(sump$misclass[1] > summ$misclass[1], 'higher', 'lower'), ' than the unpruned tree')
+```
+
+(k) Compare the test error rates between the pruned and unpruned trees. Which is higher?
+
+```{r}
+test_error <- function(model, train, data, y, type){
+  preds <- predict(model, new = data[-train, ], type = type)
+  tab <- table(preds, data[-train, y])
+  1-(tab[2, 2]+tab[1, 1])/dim(data[-train, ])[1]
+}
+te <- test_error(tree.out, train = train, data = OJ, y = 'Purchase', type = 'class')
+pe <- test_error(prune.out, train = train, data = OJ, y = 'Purchase', type = 'class')
+paste0('The test error for the pruned tree is ', ifelse(pe > te, 'higher', 'lower'), ' than the unpruned tree')
+```
+
+10. We now use boosting to predict Salary in the Hitters data set.
+
+(a) Remove the observations for whom the salary information is unknown, and then log-transform the salaries.
+
+```{r}
+data(Hitters)
+Hitters <- Hitters %>% filter(!is.na(Salary)) %>% mutate(Salary = log(Salary))
+```
+
+(b) Create a training set consisting of the first 200 observations, and a test set consisting of the remaining observations.
+
+```{r}
+set.seed(666)
+train <-sample(1:nrow(Hitters), 200)
+```
+
+(c) Perform boosting on the training set with 1,000 trees for a range of values of the shrinkage parameter $\lambda$. Produce a plot with different shrinkage values on the x-axis and the corresponding training set MSE on the y-axis.
+
+```{r}
+boost <- function(lambda, y, predictors, train, data, distribution, ntrees, test = TRUE){
+    if (!missing(predictors)) {
+    form <- paste0(y, ' ~ ', paste(predictors, collapse = ' + '))
+  } else {
+    form <- paste0(y, ' ~ .')
+  }
+  gbm.out <- gbm(formula = as.formula(form), data = data[train, ], distribution = distribution, n.trees = ntrees, shrinkage = lambda)
+  if (test){
+    preds <- predict(gbm.out, newdata = data[-train, ], n.trees = ntrees)
+    error <- mean((preds - data[-train, y])^2)
+  } else {
+    preds <- predict(gbm.out,  n.trees = ntrees)
+    error <- mean((preds - data[train, y])^2)
+  }
+  c(error = error, lambda = lambda)
+}
+train_df <- map(10^seq(0,-4,length=100), boost, y = 'Salary', train = train, data = Hitters, ntrees = 1000, distribution = 'gaussian', test = FALSE)
+train_df <- as.data.frame(do.call(rbind, train_df))
+ggplot(train_df, aes(x = lambda, y = error)) + geom_line() + ylab('Train error') + xlab('Shrinkage')
+```
+
+(d) Produce a plot with different shrinkage values on the x-axis and the corresponding test set MSE on the y-axis.
+
+```{r}
+test_df <- map(10^seq(0,-4,length=100), boost, y = 'Salary', train = train, data = Hitters, ntrees = 1000, distribution = 'gaussian', test = TRUE)
+test_df <- as.data.frame(do.call(rbind, test_df))
+ggplot(test_df, aes(x = lambda, y = error)) + geom_line() + ylab('Test error') + xlab('Shrinkage')
+```
+
+(e) Compare the test MSE of boosting to the test MSE that results from applying two of the regression approaches seen in Chapters 3 and 6.
+
+```{r}
+lm.out <- lm(Salary ~., data = Hitters, subset = train)
+preds <- predict(lm.out, newdata = Hitters[-train, ])
+mean((Hitters[-train, 'Salary']-preds)^2)
+```
+
+```{r}
+x <- model.matrix(Salary ~., data = Hitters)[, -1]
+y <- Hitters$Salary
+cvglm <- cv.glmnet(x[train, ], y[train], alpha = 1)
+lasso.out <- glmnet(x[train, ], y[train], alpha = 1)
+preds <- predict(lasso.out, newx = x[-train, ], s = cvglm$lambda.min)
+mean((preds-y[-train])^2)
+```
+(f) Which variables appear to be the most important predictors in the boosted model?
+
+```{r}
+boost_importance <- function(lambda, y, predictors, train, data, distribution, ntrees){
+    if (!missing(predictors)) {
+    form <- paste0(y, ' ~ ', paste(predictors, collapse = ' + '))
+  } else {
+    form <- paste0(y, ' ~ .')
+  }
+  gbm.out <- gbm(formula = as.formula(form), data = data[train, ], distribution = distribution, n.trees = ntrees, shrinkage = lambda)
+  sumb <- summary(gbm.out, plotit = FALSE)
+  most_important <- as.character(sumb$var[1])
+  c(var = most_important, lambda = as.numeric(lambda))
+}
+df <- map(10^seq(0,-4,length=100), boost_importance, y = 'Salary', train = train, data = Hitters, distribution = 'gaussian', ntrees = 100)
+df <- as.data.frame(do.call(rbind, df))
+df$lambda <- as.numeric(df$lambda)
+ggplot(df, aes(x = lambda, y = var)) + geom_point()
+```
+
+(g) Now apply bagging to the training set. What is the test set MSE for this approach?
+
+```{r}
+```
+
+11. This question uses the Caravan data set.
+
+(a) Create a training set consisting of the first 1,000 observations,
+and a test set consisting of the remaining observations.
+
+```{r}
+data(Caravan)
+set.seed(4382)
+train <- sample(1:nrow(Caravan), 1000)
+```
+
+(b) Fit a boosting model to the training set with `Purchase` as the response and the other variables as predictors. Use 1,000 trees, and a shrinkage value of 0.01. Which predictors appear to be the most important?
+
+```{r}
+Caravan$Purchase <- ifelse(Caravan$Purchase == 'Yes', 1, 0)
+gbm.out <- gbm(Purchase ~., data = Caravan[train, ], n.trees = 1000, shrinkage = 0.01, distribution = 'bernoulli')
+head(summary(gbm.out, plotit = FALSE))
+```
+
+(c) Use the boosting model to predict the response on the test data. Predict that a person will make a purchase if the estimated probability of purchase is greater than 20%. Form a confusion matrix. What fraction of the people predicted to make a purchase do in fact make one? How does this compare with the results obtained from applying KNN or logistic regression to this data set?
+
+```{r}
+preds <- predict(gbm.out, n.trees = 1000, type = 'response')
+purchase <- ifelse(preds > 0.20, 1, 0)
+tab <- table(purchase, Caravan[train, 'Purchase'])
+tab
+tab[2, 2]/(tab[2, 1] + tab[2, 2])
+```
+
+```{r}
+standard.X <- scale(Caravan[, -86])
+knn.out <- knn(standard.X[train, ], standard.X[-train, ], Caravan[train, 'Purchase'], k = 3)
+tab <- table(knn.out, Caravan[-train, 'Purchase'])
+tab
+tab[2, 2]/(tab[2, 1] + tab[2, 2])
+```
+
+
